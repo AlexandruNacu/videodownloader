@@ -46,29 +46,38 @@ app.post('/metadata', (req, res) => {
     });
 
     child.stderr.on('data', (data) => {
-        const str = data.toString();
-        console.log(str); // Print stderr to the server console for debugging
+        console.error(`stderr: ${data}`);
     });
 
     child.on('close', (code) => {
         if (code !== 0) {
-            res.status(500).send({ error: 'Failed to retrieve metadata!' });
+            console.error(`child process exited with code ${code}`);
+            if (!res.headersSent) {
+                res.status(500).send({ error: 'Failed to retrieve metadata!' });
+            }
         } else {
             try {
                 const videoInfo = JSON.parse(outputData);
                 const title = videoInfo.title;
                 const thumbnail = videoInfo.thumbnail;
 
-                res.json({ title, thumbnail });
+                if (!res.headersSent) {
+                    res.json({ title, thumbnail });
+                }
             } catch (err) {
-                res.status(500).send({ error: 'Failed to parse metadata!' });
+                console.error('Failed to parse metadata:', err);
+                if (!res.headersSent) {
+                    res.status(500).send({ error: 'Failed to parse metadata!' });
+                }
             }
         }
     });
 
     child.on('error', (error) => {
         console.error(`exec error: ${error}`);
-        res.status(500).send({ error: 'Failed to retrieve metadata!' });
+        if (!res.headersSent) {
+            res.status(500).send({ error: 'Failed to retrieve metadata!' });
+        }
     });
 });
 
@@ -86,13 +95,19 @@ app.post('/download-file', (req, res) => {
 
     child.stdout.pipe(res);
 
+    child.stderr.on('data', (data) => {
+        console.error(`stderr: ${data}`);
+    });
+
     child.on('error', (error) => {
         console.error(`exec error: ${error}`);
-        res.status(500).send({ error: 'Download failed!' });
+        if (!res.headersSent) {
+            res.status(500).send({ error: 'Download failed!' });
+        }
     });
 
     child.on('close', (code) => {
-        if (code !== 0) {
+        if (code !== 0 && !res.headersSent) {
             res.status(500).send({ error: 'Download failed!' });
         }
     });
