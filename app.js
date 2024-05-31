@@ -1,104 +1,100 @@
-const express = require('express');
-const { spawn } = require('child_process');
-const path = require('path');
-const app = express();
+document.addEventListener('DOMContentLoaded', function() {
+    const tabs = document.querySelectorAll('.tab');
+    const form = document.getElementById('download-form');
+    const resultDiv = document.getElementById('result');
+    const progressDiv = document.getElementById('progress');
+    const thumbnailImg = document.getElementById('thumbnail');
+    let activeTab = 'youtube';
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname, 'public')));
+    const API_KEY = '2f8a8e6f4c7b5a3d4e7f8b9c1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0'; // Replace with your actual API key
 
-let clients = [];
-
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-app.get('/events', (req, res) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
-
-    clients.push(res);
-
-    req.on('close', () => {
-        clients = clients.filter(client => client !== res);
-    });
-});
-
-function sendProgress(progress) {
-    clients.forEach(client => {
-        client.write(`data: ${JSON.stringify(progress)}\n\n`);
-    });
-}
-
-app.post('/metadata', (req, res) => {
-    const url = req.body.url;
-    const command = 'yt-dlp';
-    const args = ['--dump-json', url];
-
-    const child = spawn(command, args);
-
-    let outputData = '';
-
-    child.stdout.on('data', (data) => {
-        outputData += data;
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            tabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            activeTab = tab.getAttribute('data-tab');
+            resultDiv.innerHTML = '';
+            progressDiv.innerHTML = '';
+            thumbnailImg.style.display = 'none';
+        });
     });
 
-    child.stderr.on('data', (data) => {
-        const str = data.toString();
-        console.log(str); // Print stderr to the server console for debugging
-    });
+    form.addEventListener('submit', async function(e) {
+        e.preventDefault();
 
-    child.on('close', (code) => {
-        if (code !== 0) {
-            res.status(500).send({ error: 'Failed to retrieve metadata!' });
-        } else {
-            try {
-                const videoInfo = JSON.parse(outputData);
-                const title = videoInfo.title;
-                const thumbnail = videoInfo.thumbnail;
+        const url = document.getElementById('url').value;
+        const format = document.getElementById('format').value;
+        resultDiv.innerHTML = '';
+        progressDiv.innerHTML = 'Fetching metadata...';
+        thumbnailImg.style.display = 'none';
 
-                res.json({ title, thumbnail });
-            } catch (err) {
-                res.status(500).send({ error: 'Failed to parse metadata!' });
+        try {
+            console.log('Sending API Key:', API_KEY); // Log the API key
+            const metadataResponse = await fetch('http://134.122.91.143/api/metadata', { // Update with your IP address and endpoint
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': API_KEY
+                },
+                body: JSON.stringify({
+                    url: url
+                })
+            });
+
+            if (!metadataResponse.ok) {
+                throw new Error(`Error fetching metadata: ${metadataResponse.statusText}`);
             }
+
+            const metadata = await metadataResponse.json();
+
+            if (!metadata || metadata.error) {
+                resultDiv.innerHTML = `<p>Error: ${metadata?.error || 'Unknown error'}</p>`;
+                return;
+            }
+
+            const { title, thumbnail } = metadata;
+            thumbnailImg.src = thumbnail;
+            thumbnailImg.style.display = 'block';
+            resultDiv.innerHTML = `<p>Title: ${title}</p>`;
+
+            const eventSource = new EventSource('/events');
+            eventSource.onmessage = function(event) {
+                const progress = JSON.parse(event.data).progress;
+                progressDiv.innerHTML = `Download progress: ${progress.toFixed(2)}%`;
+            };
+
+            const downloadResponse = await fetch('http://134.122.91.143/api/download-file', { // Update with your IP address and endpoint
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': API_KEY
+                },
+                body: JSON.stringify({
+                    url: url,
+                    format: format,
+                    title: title
+                })
+            });
+
+            if (!downloadResponse.ok) {
+                const errorData = await downloadResponse.json();
+                throw new Error(`Error downloading file: ${errorData.error}`);
+            }
+
+            const blob = await downloadResponse.blob();
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = downloadUrl;
+            a.download = `${title}.mp4`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(downloadUrl);
+            resultDiv.innerHTML = 'Download complete.';
+            eventSource.close();
+        } catch (error) {
+            console.error('Error:', error);
+            resultDiv.innerHTML = `<p>Error: ${error.message}</p>`;
         }
     });
-
-    child.on('error', (error) => {
-        console.error(`exec error: ${error}`);
-        res.status(500).send({ error: 'Failed to retrieve metadata!' });
-    });
-});
-
-app.post('/download-file', (req, res) => {
-    const url = req.body.url;
-    const format = req.body.format || 'best';
-    const title = req.body.title || 'video';
-    const command = 'yt-dlp';
-    const args = ['-f', format, '-o', '-', url];
-
-    res.setHeader('Content-Disposition', `attachment; filename="${title}.mp4"`);
-    res.setHeader('Content-Type', 'video/mp4');
-
-    const child = spawn(command, args);
-
-    child.stdout.pipe(res);
-
-    child.on('error', (error) => {
-        console.error(`exec error: ${error}`);
-        res.status(500).send({ error: 'Download failed!' });
-    });
-
-    child.on('close', (code) => {
-        if (code !== 0) {
-            res.status(500).send({ error: 'Download failed!' });
-        }
-    });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
 });
